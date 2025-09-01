@@ -1,0 +1,123 @@
+// Code is written in STATA
+
+// Load Performance Panel dataset
+use "C:\Users\ryan\Downloads\Performance_Panel.dta"
+browse
+clear
+
+// Load Employee Characteristics dataset
+use "C:\Users\ryan\Downloads\EmployeeCharacteristics.dta"
+browse
+clear
+
+// Load Employee Status dataset
+use "C:\Users\ryan\Downloads\EmployeeStatus.dta", clear
+label variable treatment "Treatment Group: 1=Work_From_Home, 0=In_Office"
+tempfile employstatus
+save `employstatus'
+
+// Reopen Employee Characteristics
+use "C:\Users\ryan\Downloads\EmployeeCharacteristics.dta", clear
+browse
+describe rental
+
+// Recode rental variable
+gen rental_num = .
+decode rental, gen(rental_str)
+gen byte rental_bin = .
+replace rental_bin = 1 if trim(lower(rental_str)) == "yes"
+replace rental_bin = 0 if trim(lower(rental_str)) == "no"
+label variable rental_bin "Rental Status (1 = yes, 0 = no)"
+drop rental rental_str
+
+// Merge Employee Characteristics with Status
+merge 1:1 personid using `employstatus'
+drop if _merge != 3
+drop _merge
+tempfile employchar
+save `employchar'
+
+// Reload Performance Panel
+use "C:\Users\ryan\Downloads\Performance_Panel.dta", clear
+browse
+
+// Create post-treatment indicator
+replace post = (year == 2010 & month == 12) | (year == 2011)
+if _rc {gen post = (year == 2010 & month == 12) | (year == 2011)}
+else { replace post = (year == 2010 & month == 12) | (year == 2011)}
+label variable post "Post-Treatment Period"
+
+// Merge with Employee Characteristics
+merge m:1 personid using `employchar'
+drop if _merge != 3
+drop _merge
+
+// Create treatment × post variable
+gen treat_post = treatment * post
+label variable treat_post "Treatment × Post Indicator"
+
+// Set panel time variable
+gen time = ym(year, month)
+format time %tm
+tsset personid time, monthly
+tempfile paneldata
+save `paneldata'
+
+// Merge QuitDate with Status
+use "C:\Users\ryan\Downloads\QuitDate.dta", clear
+merge m:1 personid using `employstatus'
+drop if _merge != 3
+drop _merge
+save "merged_data.dta", replace
+
+// Load merged dataset
+use "merged_data.dta", clear
+summarize
+
+// Clean missing values
+replace age = . if age == -99
+replace tenure = . if tenure == -99
+replace prior_experience = . if prior_experience == -99
+
+// Run OLS regression with cluster SEs
+reg quit treat_post post treatment age tenure prior_experience male married high_school rental_bin i.personid, vce(cluster personid)
+
+// Frequency of quit
+tab quit
+
+// Run logit regression
+logit quit treat_post age tenure prior_experience male married high_school rental_bin
+
+// Margins for treat_post
+margins, at(treat_post=(0 1)) //_at 1 = before policy, _at 2 = after policy implemented
+marginsplot, title("Effect of Work From Home Policy on Quit Probability")
+
+// Save project data
+save "empirical_project_data.dta", replace
+
+// Install estout package
+ssc install estout, replace
+
+// Store OLS regression
+eststo did_ols: regress quit treat_post post treatment age tenure prior_experience male married high_school rental_bin
+
+// Store logit regression
+eststo logit_model: logit quit treat_post post treatment age tenure prior_experience male married high_school rental_bin
+
+// Margins after logit
+margins, at(treat_post=(0 1)) post
+
+// Export margins output
+esttab using "margins_output.txt", cells("b(fmt(3)) se(fmt(3)) p(fmt(3))") label title("Predicted Probability of Quitting: Before vs After WFH") replace
+
+// Export regression results as TXT
+esttab did_ols logit_model using "reg_results.txt", se b(3) star(* 0.10 ** 0.05 *** 0.01) label title("Quit Regression Results") replace
+
+// Export regression results as CSV
+esttab did_ols logit_model using "reg_results.csv", se b(3) star(* 0.10 ** 0.05 *** 0.01) label replace csv
+
+// Save graph
+graph save "Graph" "C:\Users\ryan\Downloads\Work From Home Policy Graph.gph"
+
+// Save command log
+cmdlog using "my_analysis.do", replace
